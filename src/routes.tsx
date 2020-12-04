@@ -1,6 +1,5 @@
 import { HashRouter, Route } from "react-router-dom";
 import React from "react";
-import { ExchangeView } from "./components/exchange";
 import { ChartsView } from "./components/charts";
 
 import { WalletProvider } from "./utils/wallet";
@@ -8,6 +7,9 @@ import { ConnectionProvider } from "./utils/connection";
 import { AccountsProvider } from "./utils/accounts";
 import { CurrencyPairProvider } from "./utils/currencyPair";
 import { MarketProvider } from "./context/market";
+import { PoolOverview } from "./components/pool/view";
+import { TradeView } from "./components/trade";
+import { AddToLiquidityView } from "./components/pool/add";
 
 export function Routes() {
   return (
@@ -18,8 +20,14 @@ export function Routes() {
             <AccountsProvider>
               <MarketProvider>
                 <CurrencyPairProvider>
-                  <Route exact path="/" component={ExchangeView} />
+                  <Route exact path="/" component={TradeView} />
+                  <Route exact path="/add" component={AddToLiquidityView} />
                   <Route exact path="/info" component={() => <ChartsView />} />
+                  <Route
+                    exact
+                    path="/pool"
+                    component={() => <PoolOverview />}
+                  />
                 </CurrencyPairProvider>
               </MarketProvider>
             </AccountsProvider>

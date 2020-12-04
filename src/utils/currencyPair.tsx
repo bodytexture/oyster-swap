@@ -1,4 +1,10 @@
-import React, { useCallback, useContext, useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   calculateDependentAmount,
   usePoolForBasket,
@@ -8,7 +14,7 @@ import { useMint, useAccountByMint } from "./accounts";
 import { MintInfo } from "@solana/spl-token";
 import { useConnection, useConnectionConfig } from "./connection";
 import { TokenAccount } from "../models";
-import { convert, KnownToken } from "./utils";
+import { convert, getTokenIcon, getTokenName, KnownToken } from "./utils";
 import { useHistory, useLocation } from "react-router-dom";
 import bs58 from "bs58";
 
@@ -17,6 +23,8 @@ export interface CurrencyContextState {
   account?: TokenAccount;
   mint?: MintInfo;
   amount: string;
+  name: string;
+  icon?: string;
   setAmount: (val: string) => void;
   setMint: (mintAddress: string) => void;
   convertAmount: () => number;
@@ -26,6 +34,7 @@ export interface CurrencyContextState {
 export interface CurrencyPairContextState {
   A: CurrencyContextState;
   B: CurrencyContextState;
+  lastTypedAccount: string;
   setLastTypedAccount: (mintAddress: string) => void;
   setPoolOperation: (swapDirection: PoolOperation) => void;
 }
@@ -34,24 +43,70 @@ const CurrencyPairContext = React.createContext<CurrencyPairContextState | null>
   null
 );
 
+const convertAmount = (amount: string, mint?: MintInfo) => {
+  return parseFloat(amount) * Math.pow(10, mint?.decimals || 0);
+};
+
+export const useCurrencyLeg = (defaultMint?: string) => {
+  const { tokenMap } = useConnectionConfig();
+  const [amount, setAmount] = useState("");
+  const [mintAddress, setMintAddress] = useState(defaultMint || "");
+  const account = useAccountByMint(mintAddress);
+  const mint = useMint(mintAddress);
+
+  return useMemo(
+    () => ({
+      mintAddress: mintAddress,
+      account: account,
+      mint: mint,
+      amount: amount,
+      name: getTokenName(tokenMap, mintAddress),
+      icon: getTokenIcon(tokenMap, mintAddress),
+      setAmount: setAmount,
+      setMint: setMintAddress,
+      convertAmount: () => convertAmount(amount, mint),
+      sufficientBalance: () =>
+        account !== undefined && convert(account, mint) >= parseFloat(amount),
+    }),
+    [mintAddress, account, mint, amount, tokenMap, setAmount, setMintAddress]
+  );
+};
+
 export function CurrencyPairProvider({ children = null as any }) {
   const connection = useConnection();
   const { tokens } = useConnectionConfig();
-  const [amountA, setAmountA] = useState("");
-  const [amountB, setAmountB] = useState("");
+
   const history = useHistory();
   const location = useLocation();
-  const [mintAddressA, setMintAddressA] = useState("");
-  const [mintAddressB, setMintAddressB] = useState("");
   const [lastTypedAccount, setLastTypedAccount] = useState("");
-  const accountA = useAccountByMint(mintAddressA);
-  const accountB = useAccountByMint(mintAddressB);
-  const mintA = useMint(mintAddressA);
-  const mintB = useMint(mintAddressB);
-  const pool = usePoolForBasket([mintAddressA, mintAddressB]);
   const [poolOperation, setPoolOperation] = useState<PoolOperation>(
     PoolOperation.Add
   );
+
+  const base = useCurrencyLeg();
+  const mintAddressA = base.mintAddress;
+  const setMintAddressA = base.setMint;
+  const amountA = base.amount;
+  const setAmountA = base.setAmount;
+
+  const quote = useCurrencyLeg();
+  const mintAddressB = quote.mintAddress;
+  const setMintAddressB = quote.setMint;
+  const amountB = quote.amount;
+  const setAmountB = quote.setAmount;
+
+  const pool = usePoolForBasket([base.mintAddress, quote.mintAddress]);
+
+  useEffect(() => {
+    const base =
+      tokens.find((t) => t.mintAddress === mintAddressA)?.tokenSymbol ||
+      mintAddressA;
+    const quote =
+      tokens.find((t) => t.mintAddress === mintAddressB)?.tokenSymbol ||
+      mintAddressB;
+
+    document.title = `Swap | Serum (${base}/${quote})`;
+  }, [mintAddressA, mintAddressB, tokens, location]);
 
   // updates browser history on token changes
   useEffect(() => {
@@ -76,7 +131,7 @@ export function CurrencyPairProvider({ children = null as any }) {
         return;
       }
     }
-  }, [mintAddressA, mintAddressB, tokens, history, location]);
+  }, [mintAddressA, mintAddressB, tokens, history, location.pathname]);
 
   // Updates tokens on location change
   useEffect(() => {
@@ -91,6 +146,7 @@ export function CurrencyPairProvider({ children = null as any }) {
     if (!defaultBase || !defaultQuote) {
       return;
     }
+
     setMintAddressA(
       tokens.find((t) => t.tokenSymbol === defaultBase)?.mintAddress ||
         (isValidAddress(defaultBase) ? defaultBase : "") ||
@@ -152,37 +208,12 @@ export function CurrencyPairProvider({ children = null as any }) {
     calculateDependent();
   }, [amountB, amountA, lastTypedAccount, calculateDependent]);
 
-  const convertAmount = (amount: string, mint?: MintInfo) => {
-    return parseFloat(amount) * Math.pow(10, mint?.decimals || 0);
-  };
-
   return (
     <CurrencyPairContext.Provider
       value={{
-        A: {
-          mintAddress: mintAddressA,
-          account: accountA,
-          mint: mintA,
-          amount: amountA,
-          setAmount: setAmountA,
-          setMint: setMintAddressA,
-          convertAmount: () => convertAmount(amountA, mintA),
-          sufficientBalance: () =>
-            accountA !== undefined &&
-            convert(accountA, mintA) >= parseFloat(amountA),
-        },
-        B: {
-          mintAddress: mintAddressB,
-          account: accountB,
-          mint: mintB,
-          amount: amountB,
-          setAmount: setAmountB,
-          setMint: setMintAddressB,
-          convertAmount: () => convertAmount(amountB, mintB),
-          sufficientBalance: () =>
-            accountB !== undefined &&
-            convert(accountB, mintB) >= parseFloat(amountB),
-        },
+        A: base,
+        B: quote,
+        lastTypedAccount,
         setLastTypedAccount,
         setPoolOperation,
       }}

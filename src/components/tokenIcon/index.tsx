@@ -6,6 +6,7 @@ import { useConnectionConfig } from "../../utils/connection";
 export const TokenIcon = (props: {
   mintAddress: string;
   style?: React.CSSProperties;
+  className?: string;
 }) => {
   const { tokenMap } = useConnectionConfig();
   const icon = getTokenIcon(tokenMap, props.mintAddress);
@@ -14,6 +15,7 @@ export const TokenIcon = (props: {
     return (
       <img
         alt="Token icon"
+        className={props.className}
         key={props.mintAddress}
         width="20"
         height="20"
@@ -35,6 +37,8 @@ export const TokenIcon = (props: {
       address={props.mintAddress}
       style={{
         marginRight: "0.5rem",
+        display: "flex",
+        alignSelf: "center",
         width: 20,
         height: 20,
         marginTop: 2,
@@ -48,9 +52,10 @@ export const PoolIcon = (props: {
   mintA: string;
   mintB: string;
   style?: React.CSSProperties;
+  className?: string;
 }) => {
   return (
-    <div style={{ display: "flex" }}>
+    <div className={props.className} style={{ display: "flex" }}>
       <TokenIcon
         mintAddress={props.mintA}
         style={{ marginRight: "-0.5rem", ...props.style }}

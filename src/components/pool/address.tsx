@@ -1,29 +1,21 @@
 import React from "react";
-import { Button, Col, Row } from "antd";
+import { Button, Col, Popover, Row } from "antd";
 import { PoolInfo } from "../../models";
-import { CopyOutlined } from "@ant-design/icons";
+import { CopyOutlined, InfoCircleOutlined } from "@ant-design/icons";
 import { ExplorerLink } from "./../explorerLink";
+import { useConnectionConfig } from "../../utils/connection";
+import { getTokenName } from "../../utils/utils";
 
-export const PoolAddress = (props: {
-  pool?: PoolInfo;
+const Address = (props: {
+  address: string;
   style?: React.CSSProperties;
-  showLabel?: boolean;
+  label?: string;
 }) => {
-  const { pool } = props;
-
-  if (!pool?.pubkeys.account) {
-    return null;
-  }
-
   return (
     <Row style={{ width: "100%", ...props.style }}>
-      {props.showLabel && <Col span={6}>Address:</Col>}
-      <Col span={15}>
-        <ExplorerLink
-          address={pool.pubkeys.account.toBase58()}
-          code={true}
-          type="address"
-        />
+      {props.label && <Col span={4}>{props.label}:</Col>}
+      <Col span={17}>
+        <ExplorerLink address={props.address} code={true} type="address" />
       </Col>
       <Col span={3} style={{ display: "flex" }}>
         <Button
@@ -31,11 +23,95 @@ export const PoolAddress = (props: {
           icon={<CopyOutlined />}
           size={"small"}
           style={{ marginLeft: "auto", marginRight: 0 }}
-          onClick={() =>
-            navigator.clipboard.writeText(pool.pubkeys.account.toBase58())
-          }
+          onClick={() => navigator.clipboard.writeText(props.address)}
         />
       </Col>
     </Row>
+  );
+};
+
+export const PoolAddress = (props: {
+  pool?: PoolInfo;
+  style?: React.CSSProperties;
+  showLabel?: boolean;
+  label?: string;
+}) => {
+  const { pool } = props;
+  const label = props.label || "Address";
+
+  if (!pool?.pubkeys.account) {
+    return null;
+  }
+
+  return (
+    <Address
+      address={pool.pubkeys.account.toBase58()}
+      style={props.style}
+      label={label}
+    />
+  );
+};
+
+export const AccountsAddress = (props: {
+  pool?: PoolInfo;
+  style?: React.CSSProperties;
+}) => {
+  const { pool } = props;
+  const { tokenMap } = useConnectionConfig();
+  const account1 = pool?.pubkeys.holdingAccounts[0];
+  const account2 = pool?.pubkeys.holdingAccounts[1];
+  const mint1 = pool?.pubkeys.holdingMints[0];
+  const mint2 = pool?.pubkeys.holdingMints[1];
+  let aName, bName;
+  if (mint1) {
+    aName = getTokenName(tokenMap, mint1.toBase58());
+  }
+  if (mint2) {
+    bName = getTokenName(tokenMap, mint2.toBase58());
+  }
+
+  return (
+    <>
+      {account1 && (
+        <Address
+          address={account1.toBase58()}
+          style={props.style}
+          label={aName}
+        />
+      )}
+      {account2 && (
+        <Address
+          address={account2.toBase58()}
+          style={props.style}
+          label={bName}
+        />
+      )}
+    </>
+  );
+};
+
+export const AdressesPopover = (props: { pool?: PoolInfo }) => {
+  const { pool } = props;
+
+  return (
+    <Popover
+      placement="topRight"
+      title={"Addresses"}
+      trigger="hover"
+      content={
+        <>
+          <PoolAddress pool={pool} showLabel={true} label={"Pool"} />
+          <AccountsAddress pool={pool} />
+        </>
+      }
+    >
+      <Button
+        shape="circle"
+        size="large"
+        type="text"
+        className={"trade-address-info-button"}
+        icon={<InfoCircleOutlined />}
+      />
+    </Popover>
   );
 };
