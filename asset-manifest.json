@@ -1,20 +1,21 @@
 {
   "files": {
-    "main.css": "/static/css/main.b3029b0e.chunk.css",
+    "main.css": "/static/css/main.2e73b78d.chunk.css",
     "main.js": "/static/js/main.52673908.chunk.js",
     "runtime-main.js": "/static/js/runtime-main.da28964d.js",
     "static/css/2.b5a80ab8.chunk.css": "/static/css/2.b5a80ab8.chunk.css",
     "static/js/2.0fa90d65.chunk.js": "/static/js/2.0fa90d65.chunk.js",
     "index.html": "/index.html",
-    "precache-manifest.9ef5fe9d4fb4b2851faa18c83e9eaabe.js": "/precache-manifest.9ef5fe9d4fb4b2851faa18c83e9eaabe.js",
+    "precache-manifest.d6d84125a9355aa24ca21716d5e488b1.js": "/precache-manifest.d6d84125a9355aa24ca21716d5e488b1.js",
     "service-worker.js": "/service-worker.js",
-    "static/js/2.0fa90d65.chunk.js.LICENSE.txt": "/static/js/2.0fa90d65.chunk.js.LICENSE.txt"
+    "static/js/2.0fa90d65.chunk.js.LICENSE.txt": "/static/js/2.0fa90d65.chunk.js.LICENSE.txt",
+    "static/media/App.less": "/static/media/seru.124dc9a4.png"
   },
   "entrypoints": [
     "static/js/runtime-main.da28964d.js",
     "static/css/2.b5a80ab8.chunk.css",
     "static/js/2.0fa90d65.chunk.js",
-    "static/css/main.b3029b0e.chunk.css",
+    "static/css/main.2e73b78d.chunk.css",
     "static/js/main.52673908.chunk.js"
   ]
 }
