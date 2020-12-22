@@ -4,7 +4,7 @@ import {
   usePoolForBasket,
   PoolOperation,
 } from "../../utils/pools";
-import { Button, Card, Col, Dropdown, Popover, Row } from "antd";
+import { Button, Card, Col, Dropdown, Popover, Radio, Row } from "antd";
 import { useWallet } from "../../utils/wallet";
 import {
   useConnection,
@@ -16,23 +16,24 @@ import { LoadingOutlined, SettingOutlined } from "@ant-design/icons";
 import { notify } from "../../utils/notifications";
 import { SupplyOverview } from "./supplyOverview";
 import { CurrencyInput } from "../currencyInput";
-import { DEFAULT_DENOMINATOR, PoolConfigCard } from "./config";
+import { PoolConfigCard } from "./config";
 import "./add.less";
-import { PoolConfig, PoolInfo } from "../../models";
-import { SWAP_PROGRAM_OWNER_FEE_ADDRESS } from "../../utils/ids";
+import { CurveType, PoolInfo, TokenSwapLayout } from "../../models";
 import { useCurrencyPairState } from "../../utils/currencyPair";
 import {
   CREATE_POOL_LABEL,
   ADD_LIQUIDITY_LABEL,
   generateActionLabel,
+  generateExactOneLabel,
 } from "../labels";
 import { AdressesPopover } from "./address";
-import { formatPriceNumber } from "../../utils/utils";
+import { formatPriceNumber, getPoolName } from "../../utils/utils";
 import { useMint, useUserAccounts } from "../../utils/accounts";
 import { useEnrichedPools } from "../../context/market";
 import { PoolIcon } from "../tokenIcon";
 import { AppBar } from "../appBar";
 import { Settings } from "../settings";
+import { programIds } from "../../utils/ids";
 
 const antIcon = <LoadingOutlined style={{ fontSize: 24 }} spin />;
 
@@ -40,93 +41,218 @@ export const AddToLiquidity = () => {
   const { wallet, connected } = useWallet();
   const connection = useConnection();
   const [pendingTx, setPendingTx] = useState(false);
+  const [depositType, setDepositType] = useState("both");
   const {
     A,
     B,
     setLastTypedAccount,
     setPoolOperation,
+    options,
+    setOptions,
   } = useCurrencyPairState();
+  const [depositToken, setDepositToken] = useState<string>(A.mintAddress);
   const pool = usePoolForBasket([A?.mintAddress, B?.mintAddress]);
   const { slippage } = useSlippageConfig();
   const { tokenMap } = useConnectionConfig();
-  const [options, setOptions] = useState<PoolConfig>({
-    curveType: 0,
-    tradeFeeNumerator: 25,
-    tradeFeeDenominator: DEFAULT_DENOMINATOR,
-    ownerTradeFeeNumerator: 5,
-    ownerTradeFeeDenominator: DEFAULT_DENOMINATOR,
-    ownerWithdrawFeeNumerator: 0,
-    ownerWithdrawFeeDenominator: DEFAULT_DENOMINATOR,
-  });
+  const isLatestLayout = programIds().swapLayout === TokenSwapLayout;
 
   const executeAction = !connected
     ? wallet.connect
-    : async () => {
-      if (A.account && B.account && A.mint && B.mint) {
-        setPendingTx(true);
-        const components = [
-          {
-            account: A.account,
-            mintAddress: A.mintAddress,
-            amount: A.convertAmount(),
-          },
-          {
-            account: B.account,
-            mintAddress: B.mintAddress,
-            amount: B.convertAmount(),
-          },
-        ];
-
-        addLiquidity(connection, wallet, components, slippage, pool, options)
-          .then(() => {
-            setPendingTx(false);
-          })
-          .catch((e) => {
-            console.log("Transaction failed", e);
-            notify({
-              description:
-                "Please try again and approve transactions from your wallet",
-              message: "Adding liquidity cancelled.",
-              type: "error",
+    : async (instance?: PoolInfo) => {
+        const currentDepositToken = getDepositToken();
+        if (
+          isLatestLayout &&
+          depositType === "one" &&
+          currentDepositToken?.account &&
+          currentDepositToken.mint
+        ) {
+          setPendingTx(true);
+          const components = [
+            {
+              account: currentDepositToken.account,
+              mintAddress: currentDepositToken.mintAddress,
+              amount: currentDepositToken.convertAmount(),
+            },
+          ];
+          addLiquidity(
+            connection,
+            wallet,
+            components,
+            slippage,
+            instance,
+            options,
+            depositType
+          )
+            .then(() => {
+              setPendingTx(false);
+            })
+            .catch((e) => {
+              console.log("Transaction failed", e);
+              notify({
+                description:
+                  "Please try again and approve transactions from your wallet",
+                message: "Adding liquidity cancelled.",
+                type: "error",
+              });
+              setPendingTx(false);
             });
-            setPendingTx(false);
-          });
-      }
-    };
+        } else if (A.account && B.account && A.mint && B.mint) {
+          setPendingTx(true);
+          const components = [
+            {
+              account: A.account,
+              mintAddress: A.mintAddress,
+              amount: A.convertAmount(),
+            },
+            {
+              account: B.account,
+              mintAddress: B.mintAddress,
+              amount: B.convertAmount(),
+            },
+          ];
+
+          // use input from B as offset during pool init for curve with offset
+          if (
+            options.curveType === CurveType.ConstantProductWithOffset &&
+            !instance
+          ) {
+            options.token_b_offset = components[1].amount;
+            components[1].amount = 0;
+          }
+
+          addLiquidity(
+            connection,
+            wallet,
+            components,
+            slippage,
+            instance,
+            options
+          )
+            .then(() => {
+              setPendingTx(false);
+            })
+            .catch((e) => {
+              console.log("Transaction failed", e);
+              notify({
+                description:
+                  "Please try again and approve transactions from your wallet",
+                message: "Adding liquidity cancelled.",
+                type: "error",
+              });
+              setPendingTx(false);
+            });
+        }
+      };
 
   const hasSufficientBalance = A.sufficientBalance() && B.sufficientBalance();
-
-  const createPoolButton = SWAP_PROGRAM_OWNER_FEE_ADDRESS ? (
+  const getDepositToken = () => {
+    if (!depositToken) {
+      return undefined;
+    }
+    return depositToken === A.mintAddress ? A : B;
+  };
+  const handleToggleDepositType = (item: any) => {
+    if (item === pool?.pubkeys.mint.toBase58()) {
+      setDepositType("both");
+    } else if (item === A.mintAddress) {
+      if (depositType !== "one") {
+        setDepositType("one");
+      }
+      setDepositToken(A.mintAddress);
+    } else if (item === B.mintAddress) {
+      if (depositType !== "one") {
+        setDepositType("one");
+      }
+      setDepositToken(B.mintAddress);
+    }
+  };
+  const createPoolButton = pool && (
     <Button
       className="add-button"
-      onClick={executeAction}
-      disabled={
-        connected &&
-        (pendingTx || !A.account || !B.account || A.account === B.account)
-      }
       type="primary"
       size="large"
+      onClick={() => executeAction()}
+      disabled={
+        connected &&
+        (pendingTx ||
+          !A.account ||
+          !B.account ||
+          A.account === B.account ||
+          !hasSufficientBalance)
+      }
     >
       {generateActionLabel(CREATE_POOL_LABEL, connected, tokenMap, A, B)}
       {pendingTx && <Spin indicator={antIcon} className="add-spinner" />}
     </Button>
-  ) : (
-      <Dropdown.Button
-        className="add-button"
-        onClick={executeAction}
-        disabled={
-          connected &&
-          (pendingTx || !A.account || !B.account || A.account === B.account)
-        }
-        type="primary"
-        size="large"
-        overlay={<PoolConfigCard options={options} setOptions={setOptions} />}
-      >
-        {generateActionLabel(CREATE_POOL_LABEL, connected, tokenMap, A, B)}
-        {pendingTx && <Spin indicator={antIcon} className="add-spinner" />}
-      </Dropdown.Button>
-    );
+  );
 
+  const addLiquidityButton = (
+    <Dropdown.Button
+      className="add-button"
+      onClick={() => executeAction(pool)}
+      trigger={["click"]}
+      disabled={
+        connected &&
+        (depositType === "both"
+          ? pendingTx ||
+            !A.account ||
+            !B.account ||
+            A.account === B.account ||
+            !hasSufficientBalance
+          : !getDepositToken()?.account ||
+            !getDepositToken()?.sufficientBalance())
+      }
+      type="primary"
+      size="large"
+      overlay={
+        <PoolConfigCard
+          options={options}
+          setOptions={setOptions}
+          action={createPoolButton}
+        />
+      }
+    >
+      {depositType === "both"
+        ? generateActionLabel(
+            pool ? ADD_LIQUIDITY_LABEL : CREATE_POOL_LABEL,
+            connected,
+            tokenMap,
+            A,
+            B
+          )
+        : generateExactOneLabel(connected, tokenMap, getDepositToken())}
+      {pendingTx && <Spin indicator={antIcon} className="add-spinner" />}
+    </Dropdown.Button>
+  );
+
+  const getTokenOptions = () => {
+    let name: string = "";
+    let mint: string = "";
+    if (pool) {
+      name = getPoolName(tokenMap, pool);
+      mint = pool.pubkeys.mint.toBase58();
+    }
+    return (
+      <>
+        {pool && (
+          <Radio key={mint} value={mint} name={name}>
+            Add {name}
+          </Radio>
+        )}
+        {[A, B].map((item) => {
+          return (
+            <Radio
+              key={item.mintAddress}
+              value={item.mintAddress}
+              name={item.name}
+            >
+              Add {item.name}
+            </Radio>
+          );
+        })}
+      </>
+    );
+  };
   return (
     <>
       <div className="input-card">
@@ -144,58 +270,77 @@ export const AddToLiquidity = () => {
         >
           <Button type="text">Read more about providing liquidity.</Button>
         </Popover>
-
-        <CurrencyInput
-          title="Input"
-          onInputChange={(val: any) => {
-            setPoolOperation(PoolOperation.Add);
-            if (A.amount !== val) {
-              setLastTypedAccount(A.mintAddress);
-            }
-            A.setAmount(val);
-          }}
-          amount={A.amount}
-          mint={A.mintAddress}
-          onMintChange={(item) => {
-            A.setMint(item);
-          }}
-        />
-        <div>+</div>
-        <CurrencyInput
-          title="Input"
-          onInputChange={(val: any) => {
-            setPoolOperation(PoolOperation.Add);
-            if (B.amount !== val) {
-              setLastTypedAccount(B.mintAddress);
-            }
-            B.setAmount(val);
-          }}
-          amount={B.amount}
-          mint={B.mintAddress}
-          onMintChange={(item) => {
-            B.setMint(item);
-          }}
-        />
-        {pool && (
-          <Button
-            className="add-button"
-            type="primary"
-            size="large"
-            onClick={executeAction}
-            disabled={
-              connected &&
-              (pendingTx ||
-                !A.account ||
-                !B.account ||
-                A.account === B.account ||
-                !hasSufficientBalance)
-            }
-          >
-            {generateActionLabel(ADD_LIQUIDITY_LABEL, connected, tokenMap, A, B)}
-            {pendingTx && <Spin indicator={antIcon} className="add-spinner" />}
-          </Button>
+        {isLatestLayout && pool && (
+          <div className="flex-row-center">
+            <Radio.Group
+              style={{ margin: "10px 0" }}
+              onChange={(item) => handleToggleDepositType(item.target.value)}
+              value={
+                depositType === "both"
+                  ? pool?.pubkeys.mint.toBase58()
+                  : getDepositToken()?.mintAddress
+              }
+            >
+              {getTokenOptions()}
+            </Radio.Group>
+          </div>
         )}
-        {!pool && createPoolButton}
+        {depositType === "both" && (
+          <>
+            <CurrencyInput
+              title="Input"
+              onInputChange={(val: any) => {
+                setPoolOperation(PoolOperation.Add);
+                if (A.amount !== val) {
+                  setLastTypedAccount(A.mintAddress);
+                }
+                A.setAmount(val);
+              }}
+              amount={A.amount}
+              mint={A.mintAddress}
+              onMintChange={(item) => {
+                A.setMint(item);
+              }}
+            />
+            <div>+</div>
+            <CurrencyInput
+              title={
+                options.curveType === CurveType.ConstantProductWithOffset
+                  ? "Offset"
+                  : "Input"
+              }
+              onInputChange={(val: any) => {
+                setPoolOperation(PoolOperation.Add);
+                if (B.amount !== val) {
+                  setLastTypedAccount(B.mintAddress);
+                }
+                B.setAmount(val);
+              }}
+              amount={B.amount}
+              mint={B.mintAddress}
+              onMintChange={(item) => {
+                B.setMint(item);
+              }}
+            />
+          </>
+        )}
+        {depositType === "one" && depositToken && (
+          <CurrencyInput
+            title="Input"
+            onInputChange={(val: any) => {
+              setPoolOperation(PoolOperation.Add);
+              const dToken = getDepositToken();
+              if (dToken && dToken.amount !== val) {
+                setLastTypedAccount(dToken.mintAddress);
+              }
+              getDepositToken()?.setAmount(val);
+            }}
+            amount={getDepositToken()?.amount}
+            mint={getDepositToken()?.mintAddress}
+            hideSelect={true}
+          />
+        )}
+        {addLiquidityButton}
         {pool && <PoolPrice pool={pool} />}
         <SupplyOverview pool={pool} />
       </div>

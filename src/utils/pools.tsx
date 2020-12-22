@@ -30,9 +30,12 @@ import {
   TokenSwapLayout,
   depositInstruction,
   withdrawInstruction,
-  TokenSwapLayoutLegacyV0,
+  TokenSwapLayoutLegacyV0 as TokenSwapLayoutV0,
+  TokenSwapLayoutV1,
   swapInstruction,
   PoolConfig,
+  depositExactOneInstruction,
+  withdrawExactOneInstruction,
 } from "./../models";
 
 const LIQUIDITY_TOKEN_PRECISION = 8;
@@ -83,7 +86,6 @@ export const removeLiquidity = async (
     AccountLayout.span
   );
 
-  // TODO: check if one of to accounts needs to be native sol ... if yes unwrap it ...
   const toAccounts: PublicKey[] = [
     await findOrCreateAccountByMint(
       wallet.publicKey,
@@ -167,9 +169,117 @@ export const removeLiquidity = async (
   });
 
   return [
-    accountA.info.mint.equals(WRAPPED_SOL_MINT) ? wallet.publicKey as PublicKey : toAccounts[0],
-    accountB.info.mint.equals(WRAPPED_SOL_MINT) ? wallet.publicKey as PublicKey : toAccounts[1],
+    accountA.info.mint.equals(WRAPPED_SOL_MINT)
+      ? (wallet.publicKey as PublicKey)
+      : toAccounts[0],
+    accountB.info.mint.equals(WRAPPED_SOL_MINT)
+      ? (wallet.publicKey as PublicKey)
+      : toAccounts[1],
   ];
+};
+
+export const removeExactOneLiquidity = async (
+  connection: Connection,
+  wallet: any,
+  account: TokenAccount,
+  liquidityAmount: number,
+  tokenAmount: number,
+  tokenMint: string,
+  pool?: PoolInfo
+) => {
+  if (!pool) {
+    throw new Error("Pool is required");
+  }
+
+  notify({
+    message: "Removing Liquidity...",
+    description: "Please review transactions to approve.",
+    type: "warn",
+  });
+  // Maximum number of LP tokens
+  // needs to be different math because the new instruction
+  const liquidityMaxAmount = liquidityAmount * (1 + SLIPPAGE);
+
+  const poolMint = await cache.queryMint(connection, pool.pubkeys.mint);
+  const accountA = await cache.queryAccount(
+    connection,
+    pool.pubkeys.holdingAccounts[0]
+  );
+  const accountB = await cache.queryAccount(
+    connection,
+    pool.pubkeys.holdingAccounts[1]
+  );
+  if (!poolMint.mintAuthority) {
+    throw new Error("Mint doesnt have authority");
+  }
+
+  const tokenMatchAccount =
+    tokenMint === pool.pubkeys.holdingMints[0].toBase58() ? accountA : accountB;
+  const authority = poolMint.mintAuthority;
+
+  const signers: Account[] = [];
+  const instructions: TransactionInstruction[] = [];
+  const cleanupInstructions: TransactionInstruction[] = [];
+
+  const accountRentExempt = await connection.getMinimumBalanceForRentExemption(
+    AccountLayout.span
+  );
+
+  const toAccount: PublicKey = await findOrCreateAccountByMint(
+    wallet.publicKey,
+    wallet.publicKey,
+    instructions,
+    cleanupInstructions,
+    accountRentExempt,
+    tokenMatchAccount.info.mint,
+    signers
+  );
+
+  instructions.push(
+    Token.createApproveInstruction(
+      programIds().token,
+      account.pubkey,
+      authority,
+      wallet.publicKey,
+      [],
+      account.info.amount.toNumber() // liquidityAmount <- need math tuning
+    )
+  );
+
+  // withdraw exact one
+  instructions.push(
+    withdrawExactOneInstruction(
+      pool.pubkeys.account,
+      authority,
+      pool.pubkeys.mint,
+      account.pubkey,
+      pool.pubkeys.holdingAccounts[0],
+      pool.pubkeys.holdingAccounts[1],
+      toAccount,
+      pool.pubkeys.feeAccount,
+      pool.pubkeys.program,
+      programIds().token,
+      tokenAmount,
+      liquidityMaxAmount
+    )
+  );
+
+  let tx = await sendTransaction(
+    connection,
+    wallet,
+    instructions.concat(cleanupInstructions),
+    signers
+  );
+
+  notify({
+    message: "Liquidity Returned. Thank you for your support.",
+    type: "success",
+    description: `Transaction - ${tx}`,
+  });
+
+  return tokenMatchAccount.info.mint.equals(WRAPPED_SOL_MINT)
+    ? (wallet.publicKey as PublicKey)
+    : toAccount;
 };
 
 export const swap = async (
@@ -299,9 +409,17 @@ export const addLiquidity = async (
   components: LiquidityComponent[],
   slippage: number,
   pool?: PoolInfo,
-  options?: PoolConfig
+  options?: PoolConfig,
+  depositType: string = "both"
 ) => {
-  if (!pool) {
+  if (depositType === "one" && pool) {
+    await _addLiquidityExactOneExistingPool(
+      pool,
+      components[0],
+      connection,
+      wallet
+    );
+  } else if (!pool) {
     if (!options) {
       throw new Error("Options are required to create new pool.");
     }
@@ -349,7 +467,8 @@ export const usePools = () => {
         .filter(
           (item) =>
             item.account.data.length === TokenSwapLayout.span ||
-            item.account.data.length === TokenSwapLayoutLegacyV0.span
+            item.account.data.length === TokenSwapLayoutV1.span ||
+            item.account.data.length === TokenSwapLayoutV0.span
         )
         .map((item) => {
           let result = {
@@ -359,9 +478,16 @@ export const usePools = () => {
             init: async () => {},
           };
 
+          const layout =
+            item.account.data.length === TokenSwapLayout.span
+              ? TokenSwapLayout
+              : item.account.data.length === TokenSwapLayoutV1.span
+              ? TokenSwapLayoutV1
+              : TokenSwapLayoutV0;
+
           // handling of legacy layout can be removed soon...
-          if (item.account.data.length === TokenSwapLayoutLegacyV0.span) {
-            result.data = TokenSwapLayoutLegacyV0.decode(item.account.data);
+          if (layout === TokenSwapLayoutV0) {
+            result.data = layout.decode(item.account.data);
             let pool = toPoolInfo(result, swapId);
             pool.legacy = isLegacy;
             poolsArray.push(pool as PoolInfo);
@@ -386,7 +512,8 @@ export const usePools = () => {
               }
             };
           } else {
-            result.data = TokenSwapLayout.decode(item.account.data);
+            result.data = layout.decode(item.account.data);
+
             let pool = toPoolInfo(result, swapId);
             pool.legacy = isLegacy;
             pool.pubkeys.feeAccount = new PublicKey(result.data.feeAccount);
@@ -422,7 +549,9 @@ export const usePools = () => {
             if (obj.data.length === AccountLayout.span) {
               return cache.addAccount(pubKey, obj);
             } else if (obj.data.length === MintLayout.span) {
-              return cache.addMint(pubKey, obj);
+              if (!cache.getMint(pubKey)) {
+                return cache.addMint(pubKey, obj);
+              }
             }
 
             return obj;
@@ -446,10 +575,10 @@ export const usePools = () => {
       programIds().swap,
       async (info) => {
         const id = (info.accountId as unknown) as string;
-        if (info.accountInfo.data.length === TokenSwapLayout.span) {
+        if (info.accountInfo.data.length === programIds().swapLayout.span) {
           const account = info.accountInfo;
           const updated = {
-            data: TokenSwapLayout.decode(account.data),
+            data: programIds().swapLayout.decode(account.data),
             account: account,
             pubkey: new PublicKey(id),
           };
@@ -495,7 +624,6 @@ export const usePoolForBasket = (mints: (string | undefined)[]) => {
     (async () => {
       // reset pool during query
       setPool(undefined);
-
       let matchingPool = pools
         .filter((p) => !p.legacy)
         .filter((p) =>
@@ -674,7 +802,7 @@ async function _addLiquidityExistingPool(
     )
   );
 
-  // depoist
+  // deposit
   instructions.push(
     depositInstruction(
       pool.pubkeys.account,
@@ -690,6 +818,129 @@ async function _addLiquidityExistingPool(
       liquidity,
       amount0,
       amount1
+    )
+  );
+
+  let tx = await sendTransaction(
+    connection,
+    wallet,
+    instructions.concat(cleanupInstructions),
+    signers
+  );
+
+  notify({
+    message: "Pool Funded. Happy trading.",
+    type: "success",
+    description: `Transaction - ${tx}`,
+  });
+}
+
+async function _addLiquidityExactOneExistingPool(
+  pool: PoolInfo,
+  component: LiquidityComponent,
+  connection: Connection,
+  wallet: any
+) {
+  notify({
+    message: "Adding Liquidity...",
+    description: "Please review transactions to approve.",
+    type: "warn",
+  });
+
+  const poolMint = await cache.queryMint(connection, pool.pubkeys.mint);
+  if (!poolMint.mintAuthority) {
+    throw new Error("Mint doesnt have authority");
+  }
+
+  if (!pool.pubkeys.feeAccount) {
+    throw new Error("Invald fee account");
+  }
+
+  const accountA = await cache.queryAccount(
+    connection,
+    pool.pubkeys.holdingAccounts[0]
+  );
+  const accountB = await cache.queryAccount(
+    connection,
+    pool.pubkeys.holdingAccounts[1]
+  );
+
+  const from = component;
+
+  if (!from.account) {
+    throw new Error("Missing account info.");
+  }
+  const reserve =
+    accountA.info.mint.toBase58() === from.mintAddress
+      ? accountA.info.amount.toNumber()
+      : accountB.info.amount.toNumber();
+
+  const supply = poolMint.supply.toNumber();
+  const authority = poolMint.mintAuthority;
+
+  // Uniswap whitepaper: https://uniswap.org/whitepaper.pdf
+  // see: https://uniswap.org/docs/v2/advanced-topics/pricing/
+  // as well as native uniswap v2 oracle: https://uniswap.org/docs/v2/core-concepts/oracles/
+  const amount = from.amount;
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _liquidityTokenTempMath = (amount * (1 - SLIPPAGE) * supply) / reserve;
+  const liquidityToken = 0;
+
+  const instructions: TransactionInstruction[] = [];
+  const cleanupInstructions: TransactionInstruction[] = [];
+
+  const signers: Account[] = [];
+
+  const accountRentExempt = await connection.getMinimumBalanceForRentExemption(
+    AccountLayout.span
+  );
+  const fromKey = getWrappedAccount(
+    instructions,
+    cleanupInstructions,
+    from.account,
+    wallet.publicKey,
+    amount + accountRentExempt,
+    signers
+  );
+
+  let toAccount = findOrCreateAccountByMint(
+    wallet.publicKey,
+    wallet.publicKey,
+    instructions,
+    [],
+    accountRentExempt,
+    pool.pubkeys.mint,
+    signers,
+    new Set<string>([pool.pubkeys.feeAccount.toBase58()])
+  );
+
+  // create approval for transfer transactions
+  instructions.push(
+    Token.createApproveInstruction(
+      programIds().token,
+      fromKey,
+      authority,
+      wallet.publicKey,
+      [],
+      amount
+    )
+  );
+
+  // deposit
+  instructions.push(
+    depositExactOneInstruction(
+      pool.pubkeys.account,
+      authority,
+      fromKey,
+      pool.pubkeys.holdingAccounts[0],
+      pool.pubkeys.holdingAccounts[1],
+      pool.pubkeys.mint,
+      toAccount,
+      pool.pubkeys.program,
+      programIds().token,
+      amount,
+      liquidityToken
     )
   );
 
@@ -802,16 +1053,27 @@ export async function calculateDependentAmount(
     connection,
     pool.pubkeys.holdingAccounts[0]
   );
+  const amountA = accountA.info.amount.toNumber();
+
   const accountB = await cache.queryAccount(
     connection,
     pool.pubkeys.holdingAccounts[1]
   );
+  let amountB = accountB.info.amount.toNumber();
+
   if (!poolMint.mintAuthority) {
     throw new Error("Mint doesnt have authority");
   }
 
   if (poolMint.supply.eqn(0)) {
     return;
+  }
+
+  let offsetAmount = 0;
+  const offsetCurve = pool.raw?.data?.curve?.offset;
+  if (offsetCurve) {
+    offsetAmount = offsetCurve.token_b_offset;
+    amountB = amountB + offsetAmount;
   }
 
   const mintA = await cache.queryMint(connection, accountA.info.mint);
@@ -832,36 +1094,39 @@ export async function calculateDependentAmount(
   );
   const indAdjustedAmount = amount * indPrecision;
 
-  let indBasketQuantity = (isFirstIndependent
-    ? accountA
-    : accountB
-  ).info.amount.toNumber();
-  let depBasketQuantity = (isFirstIndependent
-    ? accountB
-    : accountA
-  ).info.amount.toNumber();
+  let indBasketQuantity = isFirstIndependent ? amountA : amountB;
+
+  let depBasketQuantity = isFirstIndependent ? amountB : amountA;
 
   var depAdjustedAmount;
-  switch (+op) {
-    case PoolOperation.Add:
-      depAdjustedAmount =
-        (depBasketQuantity / indBasketQuantity) * indAdjustedAmount;
-      break;
-    case PoolOperation.SwapGivenProceeds:
-      depAdjustedAmount = estimateInputFromProceeds(
-        depBasketQuantity,
-        indBasketQuantity,
-        indAdjustedAmount
-      );
-      break;
-    case PoolOperation.SwapGivenInput:
-      depAdjustedAmount = estimateProceedsFromInput(
-        indBasketQuantity,
-        depBasketQuantity,
-        indAdjustedAmount
-      );
-      break;
+
+  const constantPrice = pool.raw?.data?.curve?.constantPrice;
+  if (constantPrice) {
+    debugger;
+    depAdjustedAmount = (amount * depPrecision) / constantPrice.token_b_price;
+  } else {
+    switch (+op) {
+      case PoolOperation.Add:
+        depAdjustedAmount =
+          (depBasketQuantity / indBasketQuantity) * indAdjustedAmount;
+        break;
+      case PoolOperation.SwapGivenProceeds:
+        depAdjustedAmount = estimateInputFromProceeds(
+          depBasketQuantity,
+          indBasketQuantity,
+          indAdjustedAmount
+        );
+        break;
+      case PoolOperation.SwapGivenInput:
+        depAdjustedAmount = estimateProceedsFromInput(
+          indBasketQuantity,
+          depBasketQuantity,
+          indAdjustedAmount
+        );
+        break;
+    }
   }
+
   if (typeof depAdjustedAmount === "string") {
     return depAdjustedAmount;
   }
@@ -896,12 +1161,12 @@ async function _addLiquidityNewPool(
   let instructions: TransactionInstruction[] = [];
   let cleanupInstructions: TransactionInstruction[] = [];
 
-  const liquidityTokenAccount = new Account();
+  const liquidityTokenMint = new Account();
   // Create account for pool liquidity token
   instructions.push(
     SystemProgram.createAccount({
       fromPubkey: wallet.publicKey,
-      newAccountPubkey: liquidityTokenAccount.publicKey,
+      newAccountPubkey: liquidityTokenMint.publicKey,
       lamports: await connection.getMinimumBalanceForRentExemption(
         MintLayout.span
       ),
@@ -921,7 +1186,7 @@ async function _addLiquidityNewPool(
   instructions.push(
     Token.createInitMintInstruction(
       programIds().token,
-      liquidityTokenAccount.publicKey,
+      liquidityTokenMint.publicKey,
       LIQUIDITY_TOKEN_PRECISION,
       // pass control of liquidity mint to swap program
       authority,
@@ -961,7 +1226,7 @@ async function _addLiquidityNewPool(
     instructions,
     wallet.publicKey,
     accountRentExempt,
-    liquidityTokenAccount.publicKey,
+    liquidityTokenMint.publicKey,
     wallet.publicKey,
     AccountLayout.span
   );
@@ -972,14 +1237,14 @@ async function _addLiquidityNewPool(
     instructions,
     wallet.publicKey,
     accountRentExempt,
-    liquidityTokenAccount.publicKey,
+    liquidityTokenMint.publicKey,
     SWAP_PROGRAM_OWNER_FEE_ADDRESS || wallet.publicKey,
     AccountLayout.span
   );
 
   // create all accounts in one transaction
   let tx = await sendTransaction(connection, wallet, instructions, [
-    liquidityTokenAccount,
+    liquidityTokenMint,
     depositorAccount,
     feeAccount,
     ...holdingAccounts,
@@ -1007,9 +1272,9 @@ async function _addLiquidityNewPool(
       fromPubkey: wallet.publicKey,
       newAccountPubkey: tokenSwapAccount.publicKey,
       lamports: await connection.getMinimumBalanceForRentExemption(
-        TokenSwapLayout.span
+        programIds().swapLayout.span
       ),
-      space: TokenSwapLayout.span,
+      space: programIds().swapLayout.span,
       programId: programIds().swap,
     })
   );
@@ -1047,19 +1312,13 @@ async function _addLiquidityNewPool(
       authority,
       holdingAccounts[0].publicKey,
       holdingAccounts[1].publicKey,
-      liquidityTokenAccount.publicKey,
+      liquidityTokenMint.publicKey,
       feeAccount.publicKey,
       depositorAccount.publicKey,
       programIds().token,
       programIds().swap,
       nonce,
-      options.curveType,
-      options.tradeFeeNumerator,
-      options.tradeFeeDenominator,
-      options.ownerTradeFeeNumerator,
-      options.ownerTradeFeeDenominator,
-      options.ownerWithdrawFeeNumerator,
-      options.ownerWithdrawFeeDenominator
+      options
     )
   );
 
